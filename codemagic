@@ -1,0 +1,125 @@
+# Instalar dependências
+npm init -y
+npm install express mongoose dotenv stripe body-parser
+// models/User.js
+const mongoose = require("mongoose");
+
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ["fisioterapeuta", "clínica", "paciente"], required: true },
+  profile: {
+    bio: String,
+    specialties: [String],
+    ratings: [{ type: mongoose.Schema.Types.ObjectId, ref: "Rating" }],
+  },
+});
+
+module.exports = mongoose.model("User", userSchema);// models/Rating.js
+const mongoose = require("mongoose");
+
+const ratingSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  reviewer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  score: { type: Number, required: true, min: 1, max: 5 },
+  comment: String,
+});
+
+module.exports = mongoose.model("Rating", ratingSchema);// models/Transaction.js
+const mongoose = require("mongoose");
+
+const transactionSchema = new mongoose.Schema({
+  payer: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  payee: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  amount: { type: Number, required: true },
+  status: { type: String, enum: ["pending", "completed", "failed"], default: "pending" },
+  createdAt: { type: Date, default: Date.now },
+});
+
+module.exports = mongoose.model("Transaction", transactionSchema);// server.js
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const bodyParser = require("body-parser");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+const User = require("./models/User");
+const Rating = require("./models/Rating");
+const Transaction = require("./models/Transaction");
+
+const app = express();
+app.use(bodyParser.json());
+
+// Conectar ao MongoDB
+mongoose
+  .connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB conectado!"))
+  .catch((err) => console.error("Erro ao conectar ao MongoDB:", err));
+
+// Porta
+const PORT = process.env.PORT || 5000;
+
+// Rota inicial
+app.get("/", (req, res) => {
+  res.send("API para fisioterapeutas e clínicas online!");
+});// Criar um novo perfil
+app.post("/api/users", async (req, res) => {
+  const { name, email, password, role, bio, specialties } = req.body;
+
+  try {
+    const user = new User({ name, email, password, role, profile: { bio, specialties } });
+    await user.save();
+    res.status(201).json({ message: "Usuário criado com sucesso!", user });
+  } catch (error) {
+    res.status(400).json({ error: "Erro ao criar usuário", details: error.message });
+  }
+});
+
+// Avaliar um fisioterapeuta ou clínica
+app.post("/api/ratings", async (req, res) => {
+  const { userId, reviewerId, score, comment } = req.body;
+
+  try {
+    const rating = new Rating({ user: userId, reviewer: reviewerId, score, comment });
+    await rating.save();
+
+    // Adicionar avaliação ao perfil do profissional
+    const user = await User.findById(userId);
+    user.profile.ratings.push(rating._id);
+    await user.save();
+
+    res.status(201).json({ message: "Avaliação criada com sucesso!", rating });
+  } catch (error) {
+    res.status(400).json({ error: "Erro ao criar avaliação", details: error.message });
+  }
+});// Realizar pagamento
+app.post("/api/payments", async (req, res) => {
+  const { payerId, payeeId, amount, paymentMethodId } = req.body;
+
+  try {
+    // Criar uma transação no Stripe
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount * 100, // Stripe trabalha com centavos
+      currency: "brl",
+      payment_method: paymentMethodId,
+      confirm: true,
+    });
+
+    // Salvar transação no banco de dados
+    const transaction = new Transaction({
+      payer: payerId,
+      payee: payeeId,
+      amount,
+      status: "completed",
+    });
+    await transaction.save();
+
+    res.status(201).json({ message: "Pagamento realizado com sucesso!", transaction });
+  } catch (error) {
+    res.status(400).json({ error: "Erro ao processar pagamento", details: error.message });
+  }
+});app.listen(PORT, () => {
+  console.log(`Servidor rodando em https://localhost:${PORT}`);
+});MONGO_URI=mongodb+srv://<seu_usuario>:<sua_senha>@cluster0.mongodb.net/fisioterapia
+STRIPE_SECRET_KEY=sk_test_<sua_chave_stripe>
